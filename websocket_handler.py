@@ -94,7 +94,8 @@ class WebSocketHandler:
                 "type": "from_owner",
                 "content": text,
                 "messageId": message_id,
-                "timestamp": int(time.time() * 1000)
+                "timestamp": int(time.time() * 1000),
+                "stream": True
             }
             
             await self.websocket.send(json.dumps(response_data))

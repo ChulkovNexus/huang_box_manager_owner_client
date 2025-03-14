@@ -15,114 +15,84 @@ class StreamHandler:
         """
         self.websocket_handler = websocket_handler
         
-    async def process_stream(self, ollama_url, request_data, message_id=-1, test_mode=False):
+    async def process_stream(self, ollama_url, request_data, message_id=-1):
         """
-        Обработка запроса к Ollama API в потоковом режиме с мгновенной передачей данных
+        Обработка потокового запроса к Ollama API
         
-        :param ollama_url: URL API Ollama
+        :param ollama_url: URL для запроса к Ollama API
         :param request_data: Данные запроса
         :param message_id: ID сообщения для отслеживания
-        :param test_mode: Флаг тестового режима
-        :return: Полный собранный ответ
+        :return: Полный ответ от Ollama API
         """
         try:
+            start_time = time.time()
             full_response = ""
+            bytes_received = 0
+            raw_chunks = 0
+            json_chunks = 0
+            text_chunks = 0
+            
+            logger.info(f"Начало потоковой передачи (messageId: {message_id})")
+            print(f"Начало потоковой передачи (messageId: {message_id})")
+            
             async with httpx.AsyncClient() as client:
-                # Увеличиваем таймаут для длинных запросов
-                async with client.stream("POST", ollama_url, json=request_data, timeout=180.0) as response:
-                    # Проверяем статус ответа
-                    if response.status_code != 200:
-                        text_response = await response.text()
-                        error_msg = f"Ollama API вернул код ошибки: {response.status_code}, ответ: {text_response}"
-                        logger.error(error_msg)
-                        return f"Ошибка API Ollama: {response.status_code} - {text_response}"
+                async with client.stream('POST', ollama_url, json=request_data, timeout=30.0) as response:
+                    response.raise_for_status()
                     
-                    # Информируем о начале получения потоковых данных
-                    logger.debug("Начато получение потоковых данных от Ollama API с мгновенной передачей")
-                    in_test_mode = test_mode and message_id == -1
-                    
-                    # Счетчики для статистики
-                    raw_chunks = 0
-                    json_chunks = 0
-                    text_chunks = 0
-                    bytes_received = 0
-                    start_time = time.time()
-                    
-                    # Визуальный индикатор в тестовом режиме
-                    if in_test_mode:
-                        print("\n[", end="", flush=True)
-                    
-                    # ОПТИМИЗАЦИЯ: Используем прямой доступ к сырым данным для максимальной скорости
-                    async for raw_chunk in response.aiter_raw():
-                        if not raw_chunk:
-                            continue
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            bytes_received += len(line.encode('utf-8'))
+                            raw_chunks += 1
                             
-                        raw_chunks += 1
-                        bytes_received += len(raw_chunk)
-                        
-                        try:
-                            # Сразу декодируем текст из байтов
-                            chunk_text = raw_chunk.decode('utf-8')
-                            
-                            # Обрабатываем каждую строку отдельно
-                            for line in chunk_text.splitlines():
-                                if not line.strip():
-                                    continue
+                            try:
+                                data = json.loads(line)
+                                json_chunks += 1
+                                
+                                if "response" in data:
+                                    response_text = data["response"]
                                     
-                                # Пытаемся распарсить JSON
-                                try:
-                                    data = json.loads(line)
-                                    json_chunks += 1
+                                    # Фильтруем специальные токены
+                                    if response_text in ["<think>", "</think>"]:
+                                        continue
+                                        
+                                    # Добавляем в полный ответ
+                                    full_response += response_text
                                     
-                                    # Извлекаем текст из ответа
-                                    if "response" in data:
-                                        response_text = data["response"]
+                                    # Обрабатываем только непустой текст
+                                    if response_text.strip():
+                                        text_chunks += 1
                                         
-                                        # Фильтруем специальные токены
-                                        if response_text in ["<think>", "</think>"]:
-                                            continue
-                                            
-                                        # Добавляем в полный ответ
-                                        full_response += response_text
+                                        # Отправляем чанк через WebSocket
+                                        await self.websocket_handler.send_stream_chunk(response_text, message_id)
                                         
-                                        # Обрабатываем только непустой текст
-                                        if response_text.strip():
-                                            text_chunks += 1
-                                            
-                                            # НЕМЕДЛЕННАЯ ОТПРАВКА: Ключевой момент для ускорения
-                                            await self.websocket_handler.send_stream_chunk(response_text, message_id)
-                                            
-                                            # Визуализация в тестовом режиме
-                                            if in_test_mode:
-                                                print(response_text, end="", flush=True)
-                                                # Обновляем индикатор прогресса
-                                                if raw_chunks % 5 == 0:
-                                                    print(".", end="", flush=True)
-                                                    
-                                except json.JSONDecodeError:
-                                    # Если не JSON, но имеет текст, отправляем как есть
-                                    if line.strip():
-                                        logger.debug(f"Отправка не-JSON строки: {line[:30]}...")
-                                        await self.websocket_handler.send_stream_chunk(line, message_id)
-                                        if in_test_mode:
-                                            print(line, end="", flush=True)
-                        
-                        except UnicodeDecodeError as e:
-                            logger.error(f"Ошибка декодирования UTF-8: {e}")
+                                        # Логируем каждый чанк
+                                        logger.debug(f"Отправлен чанк (messageId: {message_id}): {response_text[:50]}...")
+                                        
+                            except json.JSONDecodeError:
+                                # Если не JSON, но имеет текст, отправляем как есть
+                                if line.strip():
+                                    logger.debug(f"Отправка не-JSON строки: {line[:30]}...")
+                                    await self.websocket_handler.send_stream_chunk(line, message_id)
                     
-                    # Финальная статистика
-                    elapsed_time = time.time() - start_time
-                    logger.info(f"Поток завершен за {elapsed_time:.2f} сек. Получено {bytes_received} байт в {raw_chunks} сырых чанках")
-                    logger.info(f"Обработано {json_chunks} JSON-объектов, отправлено {text_chunks} текстовых фрагментов")
-                    
-                    # Финальная отметка в тестовом режиме
-                    if in_test_mode:
-                        print("]")
-                        print(f"\n✅ Потоковая передача завершена ({text_chunks} фрагментов за {elapsed_time:.2f} сек)")
-                    
-                    # Отправляем сигнал о завершении потока
-                    await self.websocket_handler.send_stream_chunk("\n\n[Генерация завершена]", message_id, is_final=True)
-                    
+            # Финальная статистика
+            elapsed_time = time.time() - start_time
+            logger.info(f"Поток завершен за {elapsed_time:.2f} сек. Получено {bytes_received} байт в {raw_chunks} сырых чанках")
+            logger.info(f"Обработано {json_chunks} JSON-объектов, отправлено {text_chunks} текстовых фрагментов")
+            print(f"\n✅ Потоковая передача завершена ({text_chunks} фрагментов за {elapsed_time:.2f} сек)")
+            
+            # Отправляем сигнал о завершении потока
+            await self.websocket_handler.send_stream_chunk("\n\n[Генерация завершена]", message_id, is_final=True)
+            
+            # Отправляем сообщение о завершении потока
+            finished_data = {
+                "type": "finished_message_stream",
+                "content": "",
+                "messageId": message_id,
+                "timestamp": int(time.time() * 1000)
+            }
+            await self.websocket_handler.websocket.send(json.dumps(finished_data))
+            logger.info(f"Отправлено сообщение о завершении потока (messageId: {message_id})")
+            
             return full_response
             
         except httpx.TimeoutException:

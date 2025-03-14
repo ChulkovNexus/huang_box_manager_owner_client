@@ -157,14 +157,13 @@ class OllamaClient:
             logger.debug(f"Трассировка ошибки:\n{traceback.format_exc()}")
             return f"Произошла ошибка при обработке запроса: {str(e)}"
             
-    async def prepare_stream_request(self, prompt, stream_handler, message_id=-1, test_mode=False):
+    async def prepare_stream_request(self, prompt, stream_handler, message_id=-1):
         """
         Подготовка и отправка потокового запроса к Ollama API
         
         :param prompt: Текст запроса
         :param stream_handler: Обработчик потокового режима для обработки данных
         :param message_id: ID сообщения для отслеживания
-        :param test_mode: Режим тестирования
         :return: Полный собранный ответ
         """
         try:
@@ -179,8 +178,7 @@ class OllamaClient:
             return await stream_handler.process_stream(
                 ollama_url=ollama_url,
                 request_data=request_data,
-                message_id=message_id,
-                test_mode=test_mode
+                message_id=message_id
             )
             
         except Exception as e:
