@@ -80,9 +80,6 @@ class StreamHandler:
             logger.info(f"Обработано {json_chunks} JSON-объектов, отправлено {text_chunks} текстовых фрагментов")
             print(f"\n✅ Потоковая передача завершена ({text_chunks} фрагментов за {elapsed_time:.2f} сек)")
             
-            # Отправляем сигнал о завершении потока
-            await self.websocket_handler.send_stream_chunk("\n\n[Генерация завершена]", message_id, is_final=True)
-            
             # Отправляем сообщение о завершении потока
             finished_data = {
                 "type": "finished_message_stream",
